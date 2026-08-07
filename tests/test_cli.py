@@ -38,6 +38,17 @@ def test_status_logged_in(runner, mock_user_info):
         assert "✅" in result.output
 
 
+def test_status_reports_read_only_credential(runner, mock_user_info):
+    mock_cred = MagicMock()
+    mock_cred.bili_jct = ""
+    with patch("bili_cli.commands.common.get_credential", return_value=mock_cred), \
+         patch("bili_cli.client.get_self_info", new_callable=AsyncMock, return_value=mock_user_info):
+        result = runner.invoke(cli, ["status"])
+        assert result.exit_code == 0
+        assert "只读" in result.output
+        assert "写操作需要 bili_jct" in result.output
+
+
 def test_status_auto_yaml_when_stdout_is_not_tty(runner, mock_user_info, monkeypatch):
     monkeypatch.setenv("OUTPUT", "auto")
     mock_cred = MagicMock()
@@ -49,6 +60,7 @@ def test_status_auto_yaml_when_stdout_is_not_tty(runner, mock_user_info, monkeyp
         assert data["ok"] is True
         assert data["schema_version"] == "1"
         assert data["data"]["authenticated"] is True
+        assert data["data"]["write_capable"] is True
         assert data["data"]["user"]["name"] == "TestUP"
 
 

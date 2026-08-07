@@ -5,7 +5,16 @@ import os
 import pytest
 from bilibili_api.utils.network import Credential
 
+import bili_cli.auth as auth
+
 os.environ.setdefault("OUTPUT", "rich")
+
+
+@pytest.fixture(autouse=True)
+def isolate_auth_storage(tmp_path, monkeypatch):
+    """Keep tests away from any real user credential file."""
+    monkeypatch.setattr(auth, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(auth, "CREDENTIAL_FILE", tmp_path / "credential.json")
 
 
 @pytest.fixture

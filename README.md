@@ -150,8 +150,8 @@ bilibili-cli uses a 3-tier authentication strategy:
 2. **Browser cookies** — auto-extracts from Chrome, Firefox, Edge, or Brave
 3. **QR code login** — `bili login` displays a QR code in the terminal
 
-Credentials are validated on use for authenticated commands. Expired cookies are automatically cleared, while transient network validation failures keep local credentials for best-effort fallback.
-`bili status` exits with code `0` only when authenticated; otherwise it exits with `1`.
+Credentials are validated on use for authenticated commands. Expired cookies are automatically cleared, while transient network validation failures keep local credentials for read-only best-effort fallback. Write commands fail closed until validation succeeds and a `bili_jct` is present. A stale browser refresh never replaces a saved write-capable credential with a read-only one, and QR login only reports success after receiving a write-capable credential.
+`bili status` exits with code `0` when authenticated and reports whether the credential is write-capable; otherwise it exits with `1`.
 
 Most commands work without login. Subtitles, favorites/following/watch-later/history, feed, my-dynamics, and interactions require authentication. Write actions (like/coin/triple/unfollow/dynamic-post/dynamic-delete) require write-capable credential (`bili_jct`).
 
@@ -372,7 +372,9 @@ bilibili-cli 采用三级认证策略：
 2. **浏览器 Cookie** — 自动从 Chrome、Firefox、Edge、Brave 提取
 3. **扫码登录** — `bili login` 在终端显示二维码
 
-需要认证的命令会自动校验凭证。过期 Cookie 会自动清除；如果只是临时网络异常，不会误清本地凭证（会以 best-effort 继续尝试）。
+需要认证的命令会自动校验凭证。过期 Cookie 会自动清除；如果只是临时网络异常，读操作会保留本地凭证以 best-effort 尝试，写操作则会在验证成功且包含 `bili_jct` 前 fail closed。过期凭证从浏览器刷新时，不会用只读凭证覆盖已有的可写凭证；扫码登录只有拿到可写凭证才会报告成功。
+
+`bili status` 在已登录时会标明凭证是否支持写操作；未登录时退出码为 `1`。
 
 大部分命令无需登录。字幕、收藏夹、动态和互动操作需要登录。写操作（like/coin/triple/unfollow/dynamic-post/dynamic-delete）需要可写凭证（包含 `bili_jct`）。
 

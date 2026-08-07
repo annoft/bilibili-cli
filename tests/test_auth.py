@@ -1,10 +1,12 @@
 """Tests for auth module."""
 
+import asyncio
 import json
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from bilibili_api.exceptions import NetworkException
 from bilibili_api.utils.network import Credential
 
@@ -17,6 +19,7 @@ from bili_cli.auth import (
     _validate_credential,
     clear_credential,
     get_credential,
+    qr_login,
     save_credential,
 )
 
@@ -162,7 +165,8 @@ def test_get_credential_clears_expired_saved_and_returns_none_when_browser_inval
 
 def test_get_credential_optional_uses_saved_without_validation():
     saved = Credential(sessdata="saved", bili_jct="jct")
-    with patch("bili_cli.auth._load_saved_credential", return_value=saved), \
+    with patch("bili_cli.auth._is_credential_stale", return_value=True), \
+         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
          patch("bili_cli.auth._validate_credential") as mock_validate, \
          patch("bili_cli.auth._extract_browser_credential") as mock_extract:
         cred = get_credential(mode="optional")
@@ -173,11 +177,80 @@ def test_get_credential_optional_uses_saved_without_validation():
 
 def test_get_credential_write_rejects_missing_bili_jct():
     saved = Credential(sessdata="saved", bili_jct="")
-    with patch("bili_cli.auth._load_saved_credential", return_value=saved), \
-         patch("bili_cli.auth._extract_browser_credential", return_value=None), \
-         patch("bili_cli.auth._validate_credential", return_value=False):
+    with patch("bili_cli.auth._is_credential_stale", return_value=False), \
+         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
+         patch("bili_cli.auth._extract_browser_credential", return_value=None) as mock_extract, \
+         patch("bili_cli.auth._validate_credential", return_value=False), \
+         patch("bili_cli.auth.clear_credential") as mock_clear:
         cred = get_credential(mode="write")
         assert cred is None
+        mock_extract.assert_called_once_with(require_write=True)
+        mock_clear.assert_not_called()
+
+
+def test_get_credential_write_rejects_indeterminate_validation():
+    saved = Credential(sessdata="saved", bili_jct="jct")
+    with patch("bili_cli.auth._is_credential_stale", return_value=False), \
+         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
+         patch("bili_cli.auth._validate_credential", return_value=None), \
+         patch("bili_cli.auth._extract_browser_credential") as mock_extract:
+        assert get_credential(mode="write") is None
+        mock_extract.assert_not_called()
+
+
+def test_stale_read_refresh_does_not_clobber_write_capable_saved_credential():
+    saved = Credential(sessdata="saved", bili_jct="jct")
+    browser = Credential(sessdata="browser", bili_jct="")
+    with patch("bili_cli.auth._is_credential_stale", return_value=True), \
+         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
+         patch("bili_cli.auth._extract_browser_credential", return_value=browser), \
+         patch("bili_cli.auth._validate_credential", return_value=True), \
+         patch("bili_cli.auth.save_credential") as mock_save:
+        assert get_credential(mode="read") is browser
+        mock_save.assert_not_called()
+
+
+def test_qr_login_rejects_credential_without_write_capability():
+    class DummyLogin:
+        async def generate_qrcode(self):
+            return None
+
+        async def check_state(self):
+            from bilibili_api.login_v2 import QrCodeLoginEvents
+
+            return QrCodeLoginEvents.DONE
+
+        def get_credential(self):
+            return Credential(sessdata="session", bili_jct="")
+
+    with patch("bili_cli.auth.QrCodeLogin", return_value=DummyLogin()), \
+         patch("bili_cli.auth.save_credential") as mock_save, \
+         patch("bili_cli.auth._get_qr_terminal_output", return_value="QR"):
+        with pytest.raises(RuntimeError, match="未获得可写凭证"):
+            asyncio.run(qr_login())
+        mock_save.assert_not_called()
+
+
+def test_qr_login_saves_write_capable_credential():
+    credential = Credential(sessdata="session", bili_jct="jct")
+
+    class DummyLogin:
+        async def generate_qrcode(self):
+            return None
+
+        async def check_state(self):
+            from bilibili_api.login_v2 import QrCodeLoginEvents
+
+            return QrCodeLoginEvents.DONE
+
+        def get_credential(self):
+            return credential
+
+    with patch("bili_cli.auth.QrCodeLogin", return_value=DummyLogin()), \
+         patch("bili_cli.auth.save_credential") as mock_save, \
+         patch("bili_cli.auth._get_qr_terminal_output", return_value="QR"):
+        assert asyncio.run(qr_login()) is credential
+        mock_save.assert_called_once_with(credential)
 
 
 def test_extract_browser_credential_timeout_returns_none():
@@ -195,6 +268,21 @@ def test_extract_browser_credential_empty_output_returns_none():
     fake = SimpleNamespace(returncode=0, stdout="   ", stderr="")
     with patch("bili_cli.auth.subprocess.run", return_value=fake):
         assert _extract_browser_credential() is None
+
+
+def test_extract_browser_credential_write_requires_bili_jct():
+    fake = SimpleNamespace(
+        returncode=0,
+        stdout=json.dumps({"browser": "Chrome", "cookies": {"SESSDATA": "session", "bili_jct": "jct"}}),
+        stderr="",
+    )
+    with patch("bili_cli.auth.subprocess.run", return_value=fake) as mock_run:
+        credential = _extract_browser_credential(require_write=True)
+
+    assert credential is not None
+    script = mock_run.call_args.args[0][2]
+    assert 'if cookies.get("SESSDATA") and cookies.get("bili_jct"):' in script
+    compile(script, "<browser-cookie-extractor>", "exec")
 
 
 def test_render_compact_qr_returns_multiline_text():

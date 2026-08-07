@@ -55,13 +55,19 @@ def status(as_json: bool, as_yaml: bool):
     payload = common.success_payload(
         {
             "authenticated": True,
+            "write_capable": bool(getattr(cred, "bili_jct", "")),
             "user": payloads.normalize_user(info),
         }
     )
     def render() -> None:
         name = info.get("name", "unknown")
         uid = info.get("mid", "unknown")
-        common.console.print(f"[green]✅ 已登录：[bold]{name}[/bold]  (UID: {uid})[/green]")
+        if getattr(cred, "bili_jct", ""):
+            common.console.print(f"[green]✅ 已登录：[bold]{name}[/bold]  (UID: {uid})[/green]")
+        else:
+            common.console.print(
+                f"[green]✅ 已登录（只读）：[bold]{name}[/bold]  (UID: {uid})；写操作需要 bili_jct[/green]"
+            )
 
     if common.emit_or_print(payload, output_format, render):
         return

@@ -26,7 +26,7 @@ error:
 - non-TTY stdout defaults to YAML
 - command payloads are normalized at the CLI layer
 - list-like results are typically returned under `data.items`
-- `status` returns `data.authenticated` plus `data.user`
+- `status` returns `data.authenticated`, `data.write_capable`, and `data.user`
 - `whoami` returns `data.user` and `data.relation`
 - `video` returns `data.video`, `data.subtitle`, `data.ai_summary`, `data.comments`, `data.related`, and `data.warnings`
 - write commands return normalized action payloads with `data.success` and `data.action`

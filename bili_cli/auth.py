@@ -54,15 +54,28 @@ def get_credential(mode: AuthMode = "read") -> Credential | None:
     # 1. Saved credential file
     cred = _load_saved_credential()
     if cred:
+        # Optional credentials are intentionally local-only.  In particular,
+        # do not let a stale-file refresh replace the credential used by a
+        # later write operation.
+        if mode == "optional":
+            return cred
+
+        saved_supports_write = _has_write_capability(cred)
         # Check TTL — try to refresh from browser if stale
         if _is_credential_stale():
             logger.info("Credential older than %d days, attempting browser refresh", CREDENTIAL_TTL_DAYS)
-            fresh = _extract_browser_credential()
+            fresh = _extract_browser_credential(require_write=require_write)
             if fresh:
                 validation = _validate_credential(fresh, require_write=require_write)
                 if validation is True:
                     logger.info("Refreshed credential from browser")
-                    save_credential(fresh)
+                    # A read-only browser extraction must not clobber a
+                    # previously saved write-capable credential when status or
+                    # another read command triggers the refresh.
+                    if saved_supports_write and not _has_write_capability(fresh):
+                        logger.warning("Browser refresh returned a read-only credential; keeping saved write capability")
+                    else:
+                        save_credential(fresh)
                     return fresh
             # Refresh failed — validate existing credential
             logger.warning(
@@ -70,24 +83,28 @@ def get_credential(mode: AuthMode = "read") -> Credential | None:
                 CREDENTIAL_TTL_DAYS,
             )
 
-        if mode == "optional":
-            return cred
         validation = _validate_credential(cred, require_write=require_write)
         if validation is True:
             logger.info("Loaded valid credential from %s", CREDENTIAL_FILE)
             return cred
         if validation is None:
+            if require_write:
+                logger.warning("Credential validation is unavailable; refusing to use it for a write operation")
+                return None
             logger.warning("Credential validation failed due to network; using saved credential as best effort")
             return cred
         if validation is False:
-            logger.warning("Saved credential is expired, clearing")
-            clear_credential()
+            if require_write and bool(cred.sessdata) and not bool(cred.bili_jct):
+                logger.warning("Saved credential is read-only; keeping it for read operations")
+            else:
+                logger.warning("Saved credential is expired, clearing")
+                clear_credential()
 
     if mode == "optional":
         return None
 
     # 2. Browser cookie extraction
-    cred = _extract_browser_credential()
+    cred = _extract_browser_credential(require_write=require_write)
     if cred:
         validation = _validate_credential(cred, require_write=require_write)
         if validation is True:
@@ -95,12 +112,20 @@ def get_credential(mode: AuthMode = "read") -> Credential | None:
             save_credential(cred)
             return cred
         if validation is None:
+            if require_write:
+                logger.warning("Browser credential validation is unavailable; refusing to use it for a write operation")
+                return None
             logger.warning("Skipping browser credential validation due to network; using best effort")
             return cred
         if validation is False:
             logger.warning("Browser cookies are expired/invalid")
 
     return None
+
+
+def _has_write_capability(credential: Credential) -> bool:
+    """Return whether a credential has the fields required by write APIs."""
+    return bool(getattr(credential, "sessdata", "")) and bool(getattr(credential, "bili_jct", ""))
 
 
 def _is_credential_stale() -> bool:
@@ -172,18 +197,22 @@ def _load_saved_credential() -> Credential | None:
         return None
 
 
-def _extract_browser_credential() -> Credential | None:
+def _extract_browser_credential(require_write: bool = False) -> Credential | None:
     """Extract Bilibili cookies from local browsers using browser-cookie3.
 
     Runs extraction in a subprocess with timeout to avoid hanging
     when the browser is running (Chrome DB lock issue).
     """
-    extract_script = '''
+    cookie_check = 'if cookies.get("SESSDATA"):'
+    if require_write:
+        cookie_check = 'if cookies.get("SESSDATA") and cookies.get("bili_jct"):'
+
+    extract_script = f'''
 import json, sys
 try:
     import browser_cookie3 as bc3
 except ImportError:
-    print(json.dumps({"error": "not_installed"}))
+    print(json.dumps({{"error": "not_installed"}}))
     sys.exit(0)
 
 browsers = [
@@ -196,14 +225,14 @@ browsers = [
 for name, loader in browsers:
     try:
         cj = loader(domain_name=".bilibili.com")
-        cookies = {c.name: c.value for c in cj if "bilibili.com" in (c.domain or "")}
-        if "SESSDATA" in cookies:
-            print(json.dumps({"browser": name, "cookies": cookies}))
+        cookies = {{c.name: c.value for c in cj if "bilibili.com" in (c.domain or "")}}
+        {cookie_check}
+            print(json.dumps({{"browser": name, "cookies": cookies}}))
             sys.exit(0)
     except Exception:
         pass
 
-print(json.dumps({"error": "no_cookies"}))
+print(json.dumps({{"error": "no_cookies"}}))
 '''
 
     try:
@@ -395,6 +424,8 @@ async def qr_login() -> Credential:
 
         if state == QrCodeLoginEvents.DONE:
             credential = login.get_credential()
+            if not _has_write_capability(credential):
+                raise RuntimeError("二维码登录未获得可写凭证，请重试")
             save_credential(credential)
             print("\n✅ 登录成功！凭证已保存")
             return credential
