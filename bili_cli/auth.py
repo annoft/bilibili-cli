@@ -51,6 +51,8 @@ def get_credential(mode: AuthMode = "read") -> Credential | None:
     """
     require_write = mode == "write"
 
+    browser_fallback: Credential | None = None
+
     # 1. Saved credential file
     cred = _load_saved_credential()
     if cred:
@@ -61,21 +63,20 @@ def get_credential(mode: AuthMode = "read") -> Credential | None:
             return cred
 
         saved_supports_write = _has_write_capability(cred)
+        saved_is_stale = _is_credential_stale()
         # Check TTL — try to refresh from browser if stale
-        if _is_credential_stale():
+        if saved_is_stale:
             logger.info("Credential older than %d days, attempting browser refresh", CREDENTIAL_TTL_DAYS)
-            fresh = _extract_browser_credential(require_write=require_write)
-            if fresh:
-                validation = _validate_credential(fresh, require_write=require_write)
-                if validation is True:
+            fresh, fresh_validation = _select_browser_credential(
+                require_write=require_write,
+            )
+            if fresh_validation is True and fresh is not None:
+                if saved_supports_write and not _has_write_capability(fresh):
+                    logger.warning("Browser refresh returned a read-only credential; validating saved write capability")
+                    browser_fallback = fresh
+                else:
                     logger.info("Refreshed credential from browser")
-                    # A read-only browser extraction must not clobber a
-                    # previously saved write-capable credential when status or
-                    # another read command triggers the refresh.
-                    if saved_supports_write and not _has_write_capability(fresh):
-                        logger.warning("Browser refresh returned a read-only credential; keeping saved write capability")
-                    else:
-                        save_credential(fresh)
+                    save_credential(fresh)
                     return fresh
             # Refresh failed — validate existing credential
             logger.warning(
@@ -86,6 +87,8 @@ def get_credential(mode: AuthMode = "read") -> Credential | None:
         validation = _validate_credential(cred, require_write=require_write)
         if validation is True:
             logger.info("Loaded valid credential from %s", CREDENTIAL_FILE)
+            if saved_is_stale:
+                save_credential(cred)
             return cred
         if validation is None:
             if require_write:
@@ -104,21 +107,22 @@ def get_credential(mode: AuthMode = "read") -> Credential | None:
         return None
 
     # 2. Browser cookie extraction
-    cred = _extract_browser_credential(require_write=require_write)
-    if cred:
-        validation = _validate_credential(cred, require_write=require_write)
-        if validation is True:
-            logger.info("Extracted valid credential from local browser")
-            save_credential(cred)
-            return cred
-        if validation is None:
-            if require_write:
-                logger.warning("Browser credential validation is unavailable; refusing to use it for a write operation")
-                return None
-            logger.warning("Skipping browser credential validation due to network; using best effort")
-            return cred
-        if validation is False:
-            logger.warning("Browser cookies are expired/invalid")
+    if browser_fallback is not None:
+        cred, validation = browser_fallback, True
+    else:
+        cred, validation = _select_browser_credential(require_write=require_write)
+    if validation is True and cred is not None:
+        logger.info("Extracted valid credential from local browser")
+        save_credential(cred)
+        return cred
+    if validation is None and cred is not None:
+        if require_write:
+            logger.warning("Browser credential validation is unavailable; refusing to use it for a write operation")
+            return None
+        logger.warning("Skipping browser credential validation due to network; using best effort")
+        return cred
+    if validation is False:
+        logger.warning("Browser cookies are expired/invalid")
 
     return None
 
@@ -126,6 +130,26 @@ def get_credential(mode: AuthMode = "read") -> Credential | None:
 def _has_write_capability(credential: Credential) -> bool:
     """Return whether a credential has the fields required by write APIs."""
     return bool(getattr(credential, "sessdata", "")) and bool(getattr(credential, "bili_jct", ""))
+
+
+def _select_browser_credential(
+    require_write: bool = False,
+) -> tuple[Credential | None, bool | None]:
+    """Return the best API-valid browser credential, trying every browser."""
+    candidates = _extract_browser_credentials(require_write=require_write)
+    candidates.sort(key=_has_write_capability, reverse=True)
+
+    best_effort: Credential | None = None
+    for candidate in candidates:
+        validation = _validate_credential(candidate, require_write=require_write)
+        if validation is True:
+            return candidate, True
+        if validation is None and best_effort is None:
+            best_effort = candidate
+
+    if best_effort is not None:
+        return best_effort, None
+    return None, False
 
 
 def _is_credential_stale() -> bool:
@@ -197,15 +221,15 @@ def _load_saved_credential() -> Credential | None:
         return None
 
 
-def _extract_browser_credential(require_write: bool = False) -> Credential | None:
-    """Extract Bilibili cookies from local browsers using browser-cookie3.
+def _extract_browser_credentials(require_write: bool = False) -> list[Credential]:
+    """Extract Bilibili cookie candidates from local browsers.
 
     Runs extraction in a subprocess with timeout to avoid hanging
     when the browser is running (Chrome DB lock issue).
     """
-    cookie_check = 'if cookies.get("SESSDATA"):'
+    cookie_check = 'cookies.get("SESSDATA")'
     if require_write:
-        cookie_check = 'if cookies.get("SESSDATA") and cookies.get("bili_jct"):'
+        cookie_check = 'cookies.get("SESSDATA") and cookies.get("bili_jct")'
 
     extract_script = f'''
 import json, sys
@@ -215,79 +239,84 @@ except ImportError:
     print(json.dumps({{"error": "not_installed"}}))
     sys.exit(0)
 
-browsers = [
-    ("Chrome", bc3.chrome),
-    ("Firefox", bc3.firefox),
-    ("Edge", bc3.edge),
-    ("Brave", bc3.brave),
-]
-
-for name, loader in browsers:
-    try:
-        cj = loader(domain_name=".bilibili.com")
-        cookies = {{c.name: c.value for c in cj if "bilibili.com" in (c.domain or "")}}
-        {cookie_check}
-            print(json.dumps({{"browser": name, "cookies": cookies}}))
-            sys.exit(0)
-    except Exception:
-        pass
-
-print(json.dumps({{"error": "no_cookies"}}))
+loaders = {{
+    "Chrome": bc3.chrome,
+    "Firefox": bc3.firefox,
+    "Edge": bc3.edge,
+    "Brave": bc3.brave,
+}}
+name = sys.argv[1]
+credential_cookie_names = {{"SESSDATA", "bili_jct", "ac_time_value", "buvid3", "buvid4", "DedeUserID"}}
+try:
+    cj = loaders[name](domain_name=".bilibili.com")
+    cookies = {{
+        c.name: c.value
+        for c in cj
+        if c.name in credential_cookie_names and "bilibili.com" in (c.domain or "")
+    }}
+    if {cookie_check}:
+        print(json.dumps({{"candidates": [{{"browser": name, "cookies": cookies}}]}}))
+    else:
+        print(json.dumps({{"error": "no_cookies"}}))
+except Exception:
+    print(json.dumps({{"error": "no_cookies"}}))
 '''
 
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", extract_script],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
+    browser_names = ("Chrome", "Firefox", "Edge", "Brave")
+    credentials: list[Credential] = []
+    for browser_name in browser_names:
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", extract_script, browser_name],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
 
-        if result.returncode != 0:
-            logger.debug("Cookie extraction subprocess failed: %s", result.stderr)
-            return None
+            if result.returncode != 0:
+                logger.debug("Cookie extraction subprocess failed for %s: %s", browser_name, result.stderr)
+                continue
 
-        output = result.stdout.strip()
-        if not output:
-            logger.debug("Cookie extraction returned empty output")
-            return None
+            output = result.stdout.strip()
+            if not output:
+                logger.debug("Cookie extraction returned empty output for %s", browser_name)
+                continue
 
-        data = json.loads(output)
+            data = json.loads(output)
+            if "error" in data:
+                if data["error"] == "not_installed":
+                    logger.debug("browser-cookie3 not installed, skipping")
+                    break
+                logger.debug("No valid Bilibili cookies found in %s", browser_name)
+                continue
 
-        if "error" in data:
-            if data["error"] == "not_installed":
-                logger.debug("browser-cookie3 not installed, skipping")
-            else:
-                logger.debug("No valid Bilibili cookies found in any browser")
-            return None
+            for item in data["candidates"]:
+                cookies = item["cookies"]
+                candidate_browser = item["browser"]
+                if not REQUIRED_COOKIES.issubset(cookies):
+                    logger.debug("Browser cookies missing required keys: %s", REQUIRED_COOKIES)
+                    continue
+                logger.info("Found credential candidate in %s (%d cookies)", candidate_browser, len(cookies))
+                credentials.append(
+                    Credential(
+                        sessdata=cookies.get("SESSDATA", ""),
+                        bili_jct=cookies.get("bili_jct", ""),
+                        ac_time_value=cookies.get("ac_time_value", ""),
+                        buvid3=cookies.get("buvid3", ""),
+                        buvid4=cookies.get("buvid4", ""),
+                        dedeuserid=cookies.get("DedeUserID", ""),
+                    )
+                )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Cookie extraction timed out for %s (browser may be running). "
+                "Try closing the browser or use `bili login`.",
+                browser_name,
+            )
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning("Cookie extraction parse error for %s: %s", browser_name, e)
 
-        cookies = data["cookies"]
-        browser_name = data["browser"]
-        if not REQUIRED_COOKIES.issubset(cookies):
-            logger.debug("Browser cookies missing required keys: %s", REQUIRED_COOKIES)
-            return None
-        logger.info(
-            "Found valid cookies in %s (%d cookies)", browser_name, len(cookies)
-        )
-
-        return Credential(
-            sessdata=cookies.get("SESSDATA", ""),
-            bili_jct=cookies.get("bili_jct", ""),
-            ac_time_value=cookies.get("ac_time_value", ""),
-            buvid3=cookies.get("buvid3", ""),
-            buvid4=cookies.get("buvid4", ""),
-            dedeuserid=cookies.get("DedeUserID", ""),
-        )
-
-    except subprocess.TimeoutExpired:
-        logger.warning(
-            "Cookie extraction timed out (browser may be running). "
-            "Try closing your browser or use `bili login`."
-        )
-        return None
-    except (json.JSONDecodeError, KeyError) as e:
-        logger.warning("Cookie extraction parse error: %s", e)
-        return None
+    return credentials
 
 
 def save_credential(credential: Credential):

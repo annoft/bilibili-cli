@@ -9,12 +9,24 @@ import bili_cli.auth as auth
 
 os.environ.setdefault("OUTPUT", "rich")
 
+_REAL_BROWSER_CREDENTIAL_EXTRACTOR = auth._extract_browser_credentials
+
 
 @pytest.fixture(autouse=True)
-def isolate_auth_storage(tmp_path, monkeypatch):
-    """Keep tests away from any real user credential file."""
+def isolate_auth_storage(request, tmp_path, monkeypatch):
+    """Keep unit tests away from real credentials and browser cookies."""
+    if request.node.get_closest_marker("smoke") is not None:
+        return
     monkeypatch.setattr(auth, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(auth, "CREDENTIAL_FILE", tmp_path / "credential.json")
+    monkeypatch.setattr(auth, "_extract_browser_credentials", lambda require_write=False: [])
+
+
+@pytest.fixture
+def browser_credential_extractor(isolate_auth_storage, monkeypatch):
+    """Explicitly enable the real extractor implementation for subprocess-mocked unit tests."""
+    monkeypatch.setattr(auth, "_extract_browser_credentials", _REAL_BROWSER_CREDENTIAL_EXTRACTOR)
+    return auth._extract_browser_credentials
 
 
 @pytest.fixture
