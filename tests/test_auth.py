@@ -3,6 +3,10 @@
 import asyncio
 import json
 import subprocess
+import sys
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -304,7 +308,7 @@ def test_extract_browser_credentials_keeps_candidate_when_later_browser_times_ou
     )
     no_cookies = SimpleNamespace(returncode=0, stdout=json.dumps({"error": "no_cookies"}), stderr="")
     timeout = subprocess.TimeoutExpired(cmd="x", timeout=15)
-    with patch("bili_cli.auth.subprocess.run", side_effect=[candidate, timeout, no_cookies, no_cookies]):
+    with patch("bili_cli.auth.subprocess.run", side_effect=[candidate, timeout, no_cookies, no_cookies, no_cookies]):
         credentials = browser_credential_extractor()
 
     assert len(credentials) == 1
@@ -319,14 +323,65 @@ def test_extract_browser_credentials_write_requires_bili_jct(browser_credential_
         stderr="",
     )
     no_cookies = SimpleNamespace(returncode=0, stdout=json.dumps({"error": "no_cookies"}), stderr="")
-    with patch("bili_cli.auth.subprocess.run", side_effect=[fake, no_cookies, no_cookies, no_cookies]) as mock_run:
+    with patch("bili_cli.auth.subprocess.run", side_effect=[fake, no_cookies, no_cookies, no_cookies, no_cookies]) as mock_run:
         credentials = browser_credential_extractor(require_write=True)
 
     assert len(credentials) == 1
     script = mock_run.call_args.args[0][2]
     assert 'if cookies.get("SESSDATA") and cookies.get("bili_jct"):' in script
+    assert '"Thorium": thorium' in script
+    assert 'Path("Network") / "Cookies"' in script
     compile(script, "<browser-cookie-extractor>", "exec")
-    assert [call.args[0][3] for call in mock_run.call_args_list] == ["Chrome", "Firefox", "Edge", "Brave"]
+    assert [call.args[0][3] for call in mock_run.call_args_list] == ["Chrome", "Firefox", "Edge", "Brave", "Thorium"]
+
+
+def test_extract_browser_credentials_keeps_thorium_profiles_separate(browser_credential_extractor, tmp_path, monkeypatch):
+    base = tmp_path / "Thorium" / "User Data"
+    base.mkdir(parents=True)
+    (base / "Local State").write_text("{}")
+    for profile in ("Default", "Profile 1"):
+        cookie_file = base / profile / "Network" / "Cookies"
+        cookie_file.parent.mkdir(parents=True)
+        cookie_file.touch()
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    class FakeChrome:
+        def __init__(self, cookie_file, domain_name, key_file):
+            self.cookie_file = cookie_file
+
+        def load(self):
+            profile = Path(self.cookie_file).parent.parent.name
+            sessdata = "default-session" if profile == "Default" else "profile-session"
+            cookies = [SimpleNamespace(name="SESSDATA", value=sessdata, domain=".bilibili.com", path="/")]
+            if profile == "Profile 1":
+                cookies.append(SimpleNamespace(name="bili_jct", value="profile-jct", domain=".bilibili.com", path="/"))
+            return cookies
+
+    fake_browser_cookie3 = SimpleNamespace(
+        Chrome=FakeChrome,
+        chrome=lambda **kwargs: [],
+        firefox=lambda **kwargs: [],
+        edge=lambda **kwargs: [],
+        brave=lambda **kwargs: [],
+    )
+    no_cookies = SimpleNamespace(returncode=0, stdout=json.dumps({"error": "no_cookies"}), stderr="")
+
+    def run(command, **kwargs):
+        if command[3] != "Thorium":
+            return no_cookies
+        output = StringIO()
+        with patch.dict(sys.modules, {"browser_cookie3": fake_browser_cookie3}), patch.object(sys, "argv", ["-c", "Thorium"]):
+            with redirect_stdout(output):
+                exec(command[2], {"__name__": "__main__"})
+        return SimpleNamespace(returncode=0, stdout=output.getvalue(), stderr="")
+
+    with patch("bili_cli.auth.subprocess.run", side_effect=run):
+        credentials = browser_credential_extractor()
+
+    assert [(credential.sessdata, bool(credential.bili_jct)) for credential in credentials] == [
+        ("default-session", False),
+        ("profile-session", True),
+    ]
 
 
 def test_render_compact_qr_returns_multiline_text():

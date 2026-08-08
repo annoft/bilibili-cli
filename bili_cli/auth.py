@@ -36,6 +36,8 @@ EXTRA_COOKIE_FIELDS = ("buvid3", "buvid4", "dedeuserid")
 # Credential TTL: warn and attempt refresh after 7 days
 CREDENTIAL_TTL_DAYS = 7
 _CREDENTIAL_TTL_SECONDS = CREDENTIAL_TTL_DAYS * 86400
+_BROWSER_EXTRACTION_TIMEOUT_SECONDS = 15
+_BROWSER_EXTRACTION_DEADLINE_SECONDS = 60
 
 
 AuthMode = Literal["optional", "read", "write"]
@@ -232,45 +234,91 @@ def _extract_browser_credentials(require_write: bool = False) -> list[Credential
         cookie_check = 'cookies.get("SESSDATA") and cookies.get("bili_jct")'
 
     extract_script = f'''
-import json, sys
+import json, os, sys
+from pathlib import Path
 try:
     import browser_cookie3 as bc3
 except ImportError:
     print(json.dumps({{"error": "not_installed"}}))
     sys.exit(0)
 
+def thorium():
+    base = Path(os.environ.get("LOCALAPPDATA", "")) / "Thorium" / "User Data"
+    local_state = base / "Local State"
+    if not local_state.is_file():
+        return []
+
+    profiles = [base / "Default"] + sorted(base.glob("Profile *"))
+    profile_candidates = []
+    for profile in profiles:
+        cookies = []
+        seen = set()
+        for relative_path in (Path("Network") / "Cookies", Path("Cookies")):
+            cookie_file = profile / relative_path
+            if not cookie_file.is_file():
+                continue
+            try:
+                cj = bc3.Chrome(
+                    cookie_file=str(cookie_file),
+                    domain_name=".bilibili.com",
+                    key_file=str(local_state),
+                ).load()
+            except Exception:
+                continue
+            for cookie in cj:
+                key = (cookie.name, cookie.domain, cookie.path)
+                if key not in seen:
+                    seen.add(key)
+                    cookies.append(cookie)
+        if cookies:
+            profile_candidates.append((profile.name, cookies))
+    return profile_candidates
+
+def single(loader):
+    return [("", loader(domain_name=".bilibili.com"))]
+
 loaders = {{
-    "Chrome": bc3.chrome,
-    "Firefox": bc3.firefox,
-    "Edge": bc3.edge,
-    "Brave": bc3.brave,
+    "Chrome": lambda: single(bc3.chrome),
+    "Firefox": lambda: single(bc3.firefox),
+    "Edge": lambda: single(bc3.edge),
+    "Brave": lambda: single(bc3.brave),
+    "Thorium": thorium,
 }}
 name = sys.argv[1]
 credential_cookie_names = {{"SESSDATA", "bili_jct", "ac_time_value", "buvid3", "buvid4", "DedeUserID"}}
 try:
-    cj = loaders[name](domain_name=".bilibili.com")
-    cookies = {{
-        c.name: c.value
-        for c in cj
-        if c.name in credential_cookie_names and "bilibili.com" in (c.domain or "")
-    }}
-    if {cookie_check}:
-        print(json.dumps({{"candidates": [{{"browser": name, "cookies": cookies}}]}}))
+    candidates = []
+    for profile_name, cj in loaders[name]():
+        cookies = {{
+            c.name: c.value
+            for c in cj
+            if c.name in credential_cookie_names and "bilibili.com" in (c.domain or "")
+        }}
+        if {cookie_check}:
+            label = name if not profile_name else f"{{name}}/{{profile_name}}"
+            candidates.append({{"browser": label, "cookies": cookies}})
+    if candidates:
+        print(json.dumps({{"candidates": candidates}}))
     else:
         print(json.dumps({{"error": "no_cookies"}}))
 except Exception:
     print(json.dumps({{"error": "no_cookies"}}))
 '''
 
-    browser_names = ("Chrome", "Firefox", "Edge", "Brave")
+    browser_names = ("Chrome", "Firefox", "Edge", "Brave", "Thorium")
     credentials: list[Credential] = []
+    deadline = time.monotonic() + _BROWSER_EXTRACTION_DEADLINE_SECONDS
     for browser_name in browser_names:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning("Browser cookie extraction reached its overall time limit")
+            break
         try:
             result = subprocess.run(
                 [sys.executable, "-c", extract_script, browser_name],
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=min(_BROWSER_EXTRACTION_TIMEOUT_SECONDS, max(1, remaining)),
             )
 
             if result.returncode != 0:
@@ -313,6 +361,8 @@ except Exception:
                 "Try closing the browser or use `bili login`.",
                 browser_name,
             )
+        except OSError as e:
+            logger.warning("Cookie extraction could not start for %s: %s", browser_name, e)
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning("Cookie extraction parse error for %s: %s", browser_name, e)
 

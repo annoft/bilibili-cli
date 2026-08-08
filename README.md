@@ -26,7 +26,7 @@ A CLI for Bilibili — browse videos, users, favorites from the terminal 📺
 - 📰 **Feed** — dynamic timeline from your follows
 - 📂 **Favorites** — browse favorite folders, watch-later, and watch history
 - 👍 **Interactions** — like, coin, triple (一键三连)
-- 🔐 **Smart auth** — auto-extracts cookies from Chrome/Firefox, or QR code login
+- 🔐 **Smart auth** — auto-extracts cookies from Chrome/Firefox/Edge/Brave/Thorium, or QR code login
 - 📊 **Structured output** — major query commands support `--yaml` and `--json`
 - 🤖 **Agent-friendly defaults** — non-TTY stdout defaults to YAML; override with `OUTPUT=yaml|json|rich|auto`
 - 📦 **Stable envelope** — see [SCHEMA.md](./SCHEMA.md) for `ok/schema_version/data/error`
@@ -147,7 +147,7 @@ bili coin BV1ABcsztEcY --yaml           # Structured write result
 bilibili-cli uses a 3-tier authentication strategy:
 
 1. **Saved credential** — loads from `~/.bilibili-cli/credential.json`
-2. **Browser cookies** — auto-extracts from Chrome, Firefox, Edge, or Brave
+2. **Browser cookies** — auto-extracts from Chrome, Firefox, Edge, Brave, or Thorium
 3. **QR code login** — `bili login` displays a QR code in the terminal
 
 Credentials are validated on use for authenticated commands. Expired cookies are automatically cleared, while transient network validation failures keep local credentials for read-only best-effort fallback. Write commands fail closed until validation succeeds and a `bili_jct` is present. A stale browser refresh never replaces a saved write-capable credential with a read-only one, and QR login only reports success after receiving a write-capable credential.
@@ -223,7 +223,7 @@ Once added, AI agents that support the `.agents/skills/` convention will automat
 
 ## Troubleshooting
 
-- `需要登录` / `not_authenticated` — Run `bili login` to scan QR code, or ensure you're logged in to bilibili.com in Chrome/Firefox/Edge/Brave.
+- `需要登录` / `not_authenticated` — Run `bili login` to scan QR code, or ensure you're logged in to bilibili.com in Chrome/Firefox/Edge/Brave/Thorium.
 - `HTTP 412` / `RateLimitError` — Bilibili anti-scraping triggered. Wait a moment and retry, or reduce `--max`.
 - `无法提取 BV 号` / `InvalidBvidError` — Check the BV ID or URL format. Must be `BV` followed by 10 alphanumeric characters.
 - `NetworkError` — Check your network connection. If behind a proxy, ensure it supports the target domain.
@@ -369,7 +369,7 @@ bili coin BV1ABcsztEcY --yaml           # 结构化写操作结果
 bilibili-cli 采用三级认证策略：
 
 1. **已保存凭证** — 从 `~/.bilibili-cli/credential.json` 加载
-2. **浏览器 Cookie** — 自动从 Chrome、Firefox、Edge、Brave 提取
+2. **浏览器 Cookie** — 自动从 Chrome、Firefox、Edge、Brave、Thorium 提取
 3. **扫码登录** — `bili login` 在终端显示二维码
 
 需要认证的命令会自动校验凭证。过期 Cookie 会自动清除；如果只是临时网络异常，读操作会保留本地凭证以 best-effort 尝试，写操作则会在验证成功且包含 `bili_jct` 前 fail closed。过期凭证从浏览器刷新时，不会用只读凭证覆盖已有的可写凭证；扫码登录只有拿到可写凭证才会报告成功。
@@ -446,7 +446,7 @@ git clone git@github.com:jackwener/bilibili-cli.git .agents/skills/bilibili-cli
 
 ## 常见问题
 
-- `需要登录` — 执行 `bili login` 扫码登录，或确保已在 Chrome/Firefox/Edge/Brave 登录 bilibili.com
+- `需要登录` — 执行 `bili login` 扫码登录，或确保已在 Chrome/Firefox/Edge/Brave/Thorium 登录 bilibili.com
 - `HTTP 412` / `RateLimitError` — B 站反爬触发，稍等后重试，或减小 `--max`
 - `无法提取 BV 号` — 检查 BV 号或 URL 格式，必须是 `BV` + 10 位字母数字
 - `NetworkError` — 检查网络连接
