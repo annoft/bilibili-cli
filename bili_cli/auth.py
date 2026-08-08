@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal
 
 import qrcode
-from bilibili_api.login_v2 import QrCodeLogin, QrCodeLoginEvents
+from bilibili_api.login_v2 import QrCodeLogin, QrCodeLoginChannel, QrCodeLoginEvents
 from bilibili_api.utils.network import Credential
 
 logger = logging.getLogger(__name__)
@@ -487,7 +487,7 @@ async def qr_login() -> Credential:
     Displays a QR code in the terminal, polls until login completes,
     then saves and returns the credential.
     """
-    login = QrCodeLogin()
+    login = QrCodeLogin(QrCodeLoginChannel.TV)
     await login.generate_qrcode()
 
     # Display QR code in terminal

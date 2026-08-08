@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from bilibili_api.exceptions import NetworkException
+from bilibili_api.login_v2 import QrCodeLoginChannel
 from bilibili_api.utils.network import Credential
 
 from bili_cli.auth import (
@@ -264,11 +265,12 @@ def test_qr_login_rejects_credential_without_write_capability():
         def get_credential(self):
             return Credential(sessdata="session", bili_jct="")
 
-    with patch("bili_cli.auth.QrCodeLogin", return_value=DummyLogin()), \
+    with patch("bili_cli.auth.QrCodeLogin", return_value=DummyLogin()) as mock_login, \
          patch("bili_cli.auth.save_credential") as mock_save, \
          patch("bili_cli.auth._get_qr_terminal_output", return_value="QR"):
         with pytest.raises(RuntimeError, match="未获得可写凭证"):
             asyncio.run(qr_login())
+        mock_login.assert_called_once_with(QrCodeLoginChannel.TV)
         mock_save.assert_not_called()
 
 
@@ -287,10 +289,11 @@ def test_qr_login_saves_write_capable_credential():
         def get_credential(self):
             return credential
 
-    with patch("bili_cli.auth.QrCodeLogin", return_value=DummyLogin()), \
+    with patch("bili_cli.auth.QrCodeLogin", return_value=DummyLogin()) as mock_login, \
          patch("bili_cli.auth.save_credential") as mock_save, \
          patch("bili_cli.auth._get_qr_terminal_output", return_value="QR"):
         assert asyncio.run(qr_login()) is credential
+        mock_login.assert_called_once_with(QrCodeLoginChannel.TV)
         mock_save.assert_called_once_with(credential)
 
 
