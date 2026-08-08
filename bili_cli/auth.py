@@ -89,8 +89,6 @@ def get_credential(mode: AuthMode = "read") -> Credential | None:
         validation = _validate_credential(cred, require_write=require_write)
         if validation is True:
             logger.info("Loaded valid credential from %s", CREDENTIAL_FILE)
-            if saved_is_stale:
-                save_credential(cred)
             return cred
         if validation is None:
             if require_write:

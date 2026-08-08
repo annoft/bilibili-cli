@@ -233,11 +233,22 @@ def test_stale_read_refresh_does_not_clobber_write_capable_saved_credential():
     browser = Credential(sessdata="browser", bili_jct="")
     with patch("bili_cli.auth._is_credential_stale", return_value=True), \
          patch("bili_cli.auth._load_saved_credential", return_value=saved), \
-         patch("bili_cli.auth._extract_browser_credentials", return_value=[browser]), \
+        patch("bili_cli.auth._extract_browser_credentials", return_value=[browser]), \
          patch("bili_cli.auth._validate_credential", return_value=True), \
          patch("bili_cli.auth.save_credential") as mock_save:
         assert get_credential(mode="read") is saved
-        mock_save.assert_called_once_with(saved)
+        mock_save.assert_not_called()
+
+
+def test_stale_saved_fallback_keeps_refresh_eligible():
+    saved = Credential(sessdata="saved", bili_jct="jct")
+    with patch("bili_cli.auth._is_credential_stale", return_value=True), \
+         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
+         patch("bili_cli.auth._extract_browser_credentials", return_value=[]), \
+         patch("bili_cli.auth._validate_credential", return_value=True), \
+         patch("bili_cli.auth.save_credential") as mock_save:
+        assert get_credential(mode="read") is saved
+        mock_save.assert_not_called()
 
 
 def test_qr_login_rejects_credential_without_write_capability():
