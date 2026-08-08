@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.3
+
+- Disable automatic browser-cookie extraction in normal authentication paths; retain the implementation for future opt-in work
+- Keep QR login write-capability checks and use saved-credential validation for active authentication
+
 ## 0.5.0
 
 - Add subtitle timeline output via `bili video --subtitle-timeline` / `-st`
