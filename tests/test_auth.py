@@ -121,8 +121,7 @@ def test_validate_credential_requires_bili_jct_for_write():
 
 def test_get_credential_uses_saved_when_valid():
     saved = Credential(sessdata="saved", bili_jct="jct")
-    with patch("bili_cli.auth._is_credential_stale", return_value=False), \
-         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
+    with patch("bili_cli.auth._load_saved_credential", return_value=saved), \
          patch("bili_cli.auth._validate_credential", return_value=True) as mock_validate, \
          patch("bili_cli.auth._extract_browser_credentials") as mock_extract:
         cred = get_credential()
@@ -131,45 +130,17 @@ def test_get_credential_uses_saved_when_valid():
         mock_extract.assert_not_called()
 
 
-def test_get_credential_falls_back_to_browser_and_saves():
-    browser = Credential(sessdata="browser", bili_jct="jct")
+@pytest.mark.parametrize("mode", ["read", "write"])
+def test_get_credential_does_not_scan_browser_without_saved_credential(mode):
     with patch("bili_cli.auth._load_saved_credential", return_value=None), \
-         patch("bili_cli.auth._extract_browser_credentials", return_value=[browser]), \
-         patch("bili_cli.auth._validate_credential", return_value=True), \
-         patch("bili_cli.auth.save_credential") as mock_save:
-        cred = get_credential()
-        assert cred is browser
-        mock_save.assert_called_once_with(browser)
-
-
-def test_get_credential_skips_expired_browser_candidate():
-    expired = Credential(sessdata="expired", bili_jct="old")
-    valid = Credential(sessdata="valid", bili_jct="new")
-    with patch("bili_cli.auth._load_saved_credential", return_value=None), \
-         patch("bili_cli.auth._extract_browser_credentials", return_value=[expired, valid]), \
-         patch("bili_cli.auth._validate_credential", side_effect=[False, True]) as mock_validate, \
-         patch("bili_cli.auth.save_credential") as mock_save:
-        assert get_credential() is valid
-        assert mock_validate.call_count == 2
-        mock_save.assert_called_once_with(valid)
-
-
-def test_get_credential_prefers_write_capable_browser_candidate():
-    read_only = Credential(sessdata="read-only", bili_jct="")
-    write_capable = Credential(sessdata="write-capable", bili_jct="jct")
-    with patch("bili_cli.auth._load_saved_credential", return_value=None), \
-         patch("bili_cli.auth._extract_browser_credentials", return_value=[read_only, write_capable]), \
-         patch("bili_cli.auth._validate_credential", return_value=True) as mock_validate, \
-         patch("bili_cli.auth.save_credential") as mock_save:
-        assert get_credential() is write_capable
-        mock_validate.assert_called_once_with(write_capable, require_write=False)
-        mock_save.assert_called_once_with(write_capable)
+         patch("bili_cli.auth._extract_browser_credentials") as mock_extract:
+        assert get_credential(mode=mode) is None
+        mock_extract.assert_not_called()
 
 
 def test_get_credential_keeps_saved_on_validation_network_error():
     saved = Credential(sessdata="saved", bili_jct="jct")
-    with patch("bili_cli.auth._is_credential_stale", return_value=False), \
-         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
+    with patch("bili_cli.auth._load_saved_credential", return_value=saved), \
          patch("bili_cli.auth._validate_credential", return_value=None), \
          patch("bili_cli.auth.clear_credential") as mock_clear, \
          patch("bili_cli.auth._extract_browser_credentials") as mock_extract:
@@ -179,25 +150,23 @@ def test_get_credential_keeps_saved_on_validation_network_error():
         mock_extract.assert_not_called()
 
 
-def test_get_credential_clears_expired_saved_and_returns_none_when_browser_invalid():
+def test_get_credential_clears_expired_saved_without_browser_scan():
     saved = Credential(sessdata="saved", bili_jct="jct")
-    browser = Credential(sessdata="browser", bili_jct="jct")
-    with patch("bili_cli.auth._is_credential_stale", return_value=False), \
-         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
-         patch("bili_cli.auth._extract_browser_credentials", return_value=[browser]), \
-         patch("bili_cli.auth._validate_credential", side_effect=[False, False]), \
+    with patch("bili_cli.auth._load_saved_credential", return_value=saved), \
+         patch("bili_cli.auth._extract_browser_credentials") as mock_extract, \
+         patch("bili_cli.auth._validate_credential", return_value=False), \
          patch("bili_cli.auth.clear_credential") as mock_clear, \
          patch("bili_cli.auth.save_credential") as mock_save:
         cred = get_credential()
         assert cred is None
         mock_clear.assert_called_once()
         mock_save.assert_not_called()
+        mock_extract.assert_not_called()
 
 
 def test_get_credential_optional_uses_saved_without_validation():
     saved = Credential(sessdata="saved", bili_jct="jct")
-    with patch("bili_cli.auth._is_credential_stale", return_value=True), \
-         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
+    with patch("bili_cli.auth._load_saved_credential", return_value=saved), \
          patch("bili_cli.auth._validate_credential") as mock_validate, \
          patch("bili_cli.auth._extract_browser_credentials") as mock_extract:
         cred = get_credential(mode="optional")
@@ -208,48 +177,34 @@ def test_get_credential_optional_uses_saved_without_validation():
 
 def test_get_credential_write_rejects_missing_bili_jct():
     saved = Credential(sessdata="saved", bili_jct="")
-    with patch("bili_cli.auth._is_credential_stale", return_value=False), \
-         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
-         patch("bili_cli.auth._extract_browser_credentials", return_value=[]) as mock_extract, \
+    with patch("bili_cli.auth._load_saved_credential", return_value=saved), \
+         patch("bili_cli.auth._extract_browser_credentials") as mock_extract, \
          patch("bili_cli.auth._validate_credential", return_value=False), \
          patch("bili_cli.auth.clear_credential") as mock_clear:
         cred = get_credential(mode="write")
         assert cred is None
-        mock_extract.assert_called_once_with(require_write=True)
+        mock_extract.assert_not_called()
         mock_clear.assert_not_called()
 
 
 def test_get_credential_write_rejects_indeterminate_validation():
     saved = Credential(sessdata="saved", bili_jct="jct")
-    with patch("bili_cli.auth._is_credential_stale", return_value=False), \
-         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
+    with patch("bili_cli.auth._load_saved_credential", return_value=saved), \
          patch("bili_cli.auth._validate_credential", return_value=None), \
          patch("bili_cli.auth._extract_browser_credentials") as mock_extract:
         assert get_credential(mode="write") is None
         mock_extract.assert_not_called()
 
 
-def test_stale_read_refresh_does_not_clobber_write_capable_saved_credential():
+def test_get_credential_validates_saved_credential_without_browser_refresh():
     saved = Credential(sessdata="saved", bili_jct="jct")
-    browser = Credential(sessdata="browser", bili_jct="")
-    with patch("bili_cli.auth._is_credential_stale", return_value=True), \
-         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
-        patch("bili_cli.auth._extract_browser_credentials", return_value=[browser]), \
+    with patch("bili_cli.auth._load_saved_credential", return_value=saved), \
+         patch("bili_cli.auth._extract_browser_credentials") as mock_extract, \
          patch("bili_cli.auth._validate_credential", return_value=True), \
          patch("bili_cli.auth.save_credential") as mock_save:
         assert get_credential(mode="read") is saved
         mock_save.assert_not_called()
-
-
-def test_stale_saved_fallback_keeps_refresh_eligible():
-    saved = Credential(sessdata="saved", bili_jct="jct")
-    with patch("bili_cli.auth._is_credential_stale", return_value=True), \
-         patch("bili_cli.auth._load_saved_credential", return_value=saved), \
-         patch("bili_cli.auth._extract_browser_credentials", return_value=[]), \
-         patch("bili_cli.auth._validate_credential", return_value=True), \
-         patch("bili_cli.auth.save_credential") as mock_save:
-        assert get_credential(mode="read") is saved
-        mock_save.assert_not_called()
+        mock_extract.assert_not_called()
 
 
 def test_qr_login_rejects_credential_without_write_capability():

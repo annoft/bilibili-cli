@@ -1,7 +1,7 @@
 """Integration smoke tests for bilibili-cli.
 
 These tests invoke the real CLI commands with ``--yaml`` against the live
-Bilibili API using your local browser cookies/saved session.  They are
+Bilibili API using your saved session.  They are
 **skipped by default** and only run when explicitly requested::
 
     uv run pytest -m smoke -v
